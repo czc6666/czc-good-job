@@ -1,0 +1,11 @@
+test.*
+__pycache__
+.codex
+cache.json
+user_config.json
+resume.md
+resume-lock.md
+server.out.log
+server.err.log
+goodjobs.zip
+PROJECT_MEMORY.md
