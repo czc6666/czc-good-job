@@ -1,6 +1,6 @@
 # 开发日志
 
-> 新会话接手这个项目时，先读 `PROJECT_MEMORY.md`，再读这份 `DEV_LOG.md`。
+> 这份文件主要记录 `goodjob` 这次开源化整理与后续工程演进过程。新会话接手时，可先读 `PROJECT_MEMORY.md`，再读这份 `DEV_LOG.md`。
 
 ## 2026-03-28
 
