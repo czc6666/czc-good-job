@@ -1,6 +1,8 @@
 # goodjob
 
-一个更轻量的求职自动化项目：
+一个更轻量的求职自动化项目，面向 **浏览器脚本 + 本地 Python 后端** 的组合使用方式。
+
+当前主链能力：
 
 - 规则匹配岗位
 - 自动轮换搜索关键词
@@ -8,7 +10,21 @@
 - 收到新消息后自动发送简历
 - 默认不继续自动聊天
 
-当前主要面向浏览器端 + 本地 Python 后端的组合使用方式。
+## 当前状态
+
+当前仓库已经完成一轮开源化整理，核心方向是：
+
+- 尽量把用户差异化配置收口到 `user_config.json`
+- 前端优先通过 `/client-config` 读取配置
+- 自动投递主链不再依赖 `ollama`
+- 旧的简历缓存链已退出主链
+
+如果你只是想把项目跑起来，优先关注：
+
+- `user_config.example.json`
+- `readme.md`
+- `web_script.js`
+- `main.py`
 
 ## 适合什么场景
 
@@ -16,12 +32,18 @@
 - 想保留“我自己决定投不投”的基本控制感
 - 不想把项目重度绑死在运行时大模型上
 
+## 不适合什么场景
+
+- 想做复杂多轮自动聊天助手
+- 想把所有决策都交给运行时大模型
+- 想做通用招聘平台 SaaS，而不是一个可自定义脚本
+
 ## 当前项目结构
 
 - `main.py`：FastAPI 后端入口
 - `core.py`：评分与旧聊天能力主逻辑
 - `config.py`：规则评分配置
-- `cache.py`：遗留兼容层（当前主链已不依赖）
+- `cache.py`：遗留兼容层（当前主链已不依赖，可后续继续清理）
 - `web_script.js`：浏览器脚本
 - `user_config.example.json`：用户配置模板
 - `resume-example.md`：简历模板
@@ -90,6 +112,21 @@ start_backend.bat
 ### 5. 部署浏览器脚本
 
 把 `web_script.js` 内容粘贴到 Tampermonkey 中，然后打开目标招聘网站页面即可。
+
+## 最小使用路径
+
+如果你只想最快跑起来，可以按这个顺序：
+
+1. 复制 `user_config.example.json` 为 `user_config.json`
+2. 只修改：
+   - `introduce`
+   - `tags`
+   - `frontend.thread`
+3. 启动后端 `python main.py`
+4. 浏览器装入 `web_script.js`
+5. 打开目标招聘网站页面测试
+
+也就是说，大部分用户第一次上手时，不需要先读完整源码。
 
 ## 配置文件结构说明
 
@@ -162,6 +199,12 @@ start_backend.bat
 
 > 说明：当前自动投递主链已经不再依赖 `resume.md`、`resume-lock.md`、`cache.json` 这类旧链路文件。
 > 这些文件现在都不属于主链必要组成部分。
+
+## 仓库说明
+
+- `user_config.json`、`resume.md`、日志文件、压缩包等本地文件默认不进入仓库
+- `user_config.example.json` 是公开模板，不建议直接把自己的真实配置提交上来
+- `DEV_LOG.md` 保留在仓库里，用来记录这次开源化整理与后续工程演进
 
 ## 开源化方向
 
