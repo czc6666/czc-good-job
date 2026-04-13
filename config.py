@@ -3,6 +3,18 @@ import json
 import os
 
 
+PROFILE_ENV_KEY = 'GOODJOB_PROFILE'
+DEFAULT_PROFILE_NAME = 'ai'
+PROFILE_ALIASES = {
+    '1': 'ai',
+    '2': 'ops',
+    'ai': 'ai',
+    'ops': 'ops',
+    'op': 'ops',
+    'devops': 'ops',
+}
+
+
 DEFAULT_USER_CONFIG = {
     'resume_name': 'resume.md',
     'think_model': 'qwen3:0.6b',
@@ -252,15 +264,34 @@ def _apply_legacy_compat(config: dict, user_config: dict) -> dict:
     return config
 
 
+def _normalize_profile_name(profile_name: str | None) -> str:
+    raw = (profile_name or '').strip().lower()
+    if not raw:
+        return DEFAULT_PROFILE_NAME
+    return PROFILE_ALIASES.get(raw, raw)
+
+
+ACTIVE_PROFILE = _normalize_profile_name(os.getenv(PROFILE_ENV_KEY))
+
+
 def load_user_config():
     config = copy.deepcopy(DEFAULT_USER_CONFIG)
     config_path = 'user_config.json'
+    user_config = {}
     if os.path.exists(config_path):
         with open(config_path, 'r', encoding='utf-8') as f:
             user_config = json.load(f)
         if isinstance(user_config, dict):
-            config = _deep_merge(config, user_config)
-            config = _apply_legacy_compat(config, user_config)
+            user_base_config = {k: v for k, v in user_config.items() if k != 'profiles'}
+            config = _deep_merge(config, user_base_config)
+            config = _apply_legacy_compat(config, user_base_config)
+
+            profile_overrides = user_config.get('profiles', {})
+            if isinstance(profile_overrides, dict):
+                active_profile_config = profile_overrides.get(ACTIVE_PROFILE)
+                if isinstance(active_profile_config, dict):
+                    config = _deep_merge(config, active_profile_config)
+                    config = _apply_legacy_compat(config, active_profile_config)
     return config
 
 
@@ -290,9 +321,12 @@ class Config:
     backend = USER_CONFIG['backend']
     scoring = USER_CONFIG['scoring']
 
+    profile = ACTIVE_PROFILE
+
     @classmethod
     def get_client_config(cls):
         return {
+            'profile': cls.profile,
             'introduce': cls.introduce,
             'character': cls.character,
             'tags': cls.tags,
