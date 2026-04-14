@@ -221,6 +221,234 @@
 - 已本地样例验证：
   - `DevOps / SRE` 返回高分
 
+## 2026-04-14 同账号双方向路由、挂机稳定性与 Chrome 副本排障
+
+### 这次处理的主线
+
+这次围绕 `goodjob` 主要做了三类事情：
+
+1. **把同一个 Boss 账号下的 AI / 运维双方向投递路由真正接起来**
+2. **修复挂机时容易中断的几个现实问题**（Boss 当日打招呼上限、Edge 标签页休眠、空轮自动停机）
+3. **尝试做 Chrome 独立副本**，用于双浏览器双账号并行；目前该副本仍未稳定，不作为正式主线方案
+
+---
+
+### 一、这次确认下来的稳定主线
+
+当前老板可稳定使用的主线仍然是：
+
+- **Edge 单浏览器**
+- **同一个 Boss 账号**
+- 同一个后端
+- 根据岗位自动路由：
+  - `AI` 岗位 → AI 招呼语 + AI 简历索引
+  - `运维` 岗位 → 运维招呼语 + 运维简历索引
+- 老板若要兼顾第二个账号，当前更稳的方式是：
+  - **继续在 Edge 里手动切账号**
+  - 例如半天跑大号、半天跑小号
+
+也就是说，当前正式推荐方案不是 Chrome 副本，而是：
+
+**先把 Edge 主线当作生产可用版本，Chrome 线视为实验分支。**
+
+---
+
+### 二、这次查明并验证的关键问题
+
+#### 1. 不是程序坏了，而是 Boss 当日打招呼上限拦截了流程
+
+这次一度出现：
+- 高分岗位可以 `greet_queued`
+- 但全部立刻 `greet_queue_failed`
+
+后续通过增强动作日志，明确记录到了：
+- `addUrl`
+- `chatUrl`
+- `reason`
+
+新日志显示失败原因为：
+- `Error: biz_fail:温馨提示`
+
+老板后续手动确认后发现，Boss 页面实际弹窗提示是：
+- 当天已投递/打招呼达到阶段上限
+- 需要手动确认一次
+- 再点“立即沟通”后，后续打招呼流程又恢复正常
+
+这说明这轮失败不是前端逻辑本身坏掉，而是：
+
+**Boss 页面在达到当日额度后，会在“加入聊天列表 / 发起沟通”之前弹额外确认。**
+
+这类现象后续要优先判断为：
+- 页面业务拦截
+- 不是代码立刻回归
+
+---
+
+#### 2. Edge 后台挂机时，标签页休眠会影响持续运行
+
+老板在实际挂机过程中发现：
+- Edge 后台标签页会变灰，进入休眠
+- 一旦休眠，页面脚本容易中断或不再持续推进
+
+因此当前稳定做法应补充为：
+- 在 Edge 设置中关闭或放宽睡眠标签页
+- 至少将 `zhipin.com` 加入“永不休眠”例外名单
+- 必要时到 `edge://discards/` 检查对应标签页是否被自动 discard
+
+这属于挂机场景的**环境配置要求**，不是评分逻辑问题。
+
+---
+
+#### 3. 连续空轮自动停止不适合挂机，现已改成自动切下一个关键词
+
+原逻辑是：
+- 连续 `maxEmptyRounds`（默认 3）轮没有新岗位
+- 直接自动停止
+
+这在短时测试时合理，但对“挂机省时间”目标不合理。
+
+因此本次已修改原项目 [web_script.js](C:/Users/czc/Desktop/czc_code/goodjob/web_script.js)：
+- 当连续空轮达到阈值时
+- **不再停止脚本**
+- 而是：
+  - 记录日志：`连续 X 轮没有新岗位，自动切换到下一个关键词继续挂机`
+  - 重置 `emptyRounds`
+  - 直接进入下一轮关键词
+
+这条改动属于当前主线的正式稳定性增强。
+
+---
+
+### 三、这次暴露出的配置链问题与修复
+
+#### 问题：搜索关键词顺序改了但不生效
+
+这次明确定位到一个关键坑：
+
+- 顶层 `tags` 虽然已改成运维优先
+- 但运行时默认 `ACTIVE_PROFILE = ai`
+- `load_user_config()` 会把 `profiles.ai` 覆盖到顶层配置上
+- 因此实际前端拿到的仍然是 `profiles.ai.tags`
+
+这导致：
+- 老板以为改了搜索顺序
+- 实际运行时仍然先搜 AI 关键词
+
+#### 处理结果
+
+后续已将配置链收口为：
+- **搜索关键词只认顶层 `tags`**
+- `profile` 覆盖继续保留，但不再覆盖 `tags`
+
+这样同账号双方向场景下，才不会再出现：
+- 搜索顺序和岗位路由绑死在一起
+- 改顶层配置却不生效
+
+这是这轮中非常重要的一条长期经验：
+
+**搜索层的关键词轮换，不应该再和 profile 的 delivery 配置绑死。**
+
+---
+
+### 四、Chrome 副本方案：已尝试，但暂不作为正式方案
+
+这次为了实现：
+- Edge 大号
+- Chrome 小号
+- 两边共存
+
+曾复制出独立副本目录：
+- `C:\Users\czc\Desktop\czc_code\goodjob-chrome`
+
+并做了：
+- 后端端口切到 `8001`
+- `serverHost` 改到 `127.0.0.1:8001`
+- 广播 channel / target 改成 chrome 专用前缀
+
+#### 但当前结论是
+
+Chrome 副本目前仍存在前端多标签页协作不稳定问题，主要表现为：
+
+- 预加载完成后切到“处理聊天消息”阶段时容易卡住
+- 暂停/继续后能推进一步，但不能自然稳定循环
+- 搜索分支和聊天分支里都出现过：
+  - `获取职位详情超时`
+  - `聊天分支简历路由取详情超时`
+- 曾出现 `BroadcastChannel is closed` 相关报错
+
+这说明 Chrome 副本的真正问题更接近：
+
+**详情页 / 聊天页 / 搜索页之间的多标签广播协作链不稳。**
+
+#### 已做过的排障动作
+
+在 `goodjob-chrome` 中已做过：
+- 放宽 `timestampTimeout`
+- 放宽 `detailTimeout`
+- 补聊天页入口判定日志
+- 补详情页入口和回传日志
+- 给聊天分支取详情补超时兜底
+- 给 Broadcast 生命周期和心跳 loop 做收口，减少 `Channel is closed` 报错
+
+#### 当前结论
+
+虽然 Chrome 副本的实验有助于定位问题，但**尚未达到正式可用标准**。
+
+所以当前建议是：
+- 不把 Chrome 副本作为主项目路线
+- 老板如果要双账号，先继续使用：
+  - **Edge 单浏览器手动切账号**
+
+也就是说，Chrome 版目前属于：
+- 已探索
+- 已补部分诊断
+- 暂停继续投入
+- 以后如有必要再单独重启
+
+---
+
+### 五、本次对项目认知的更新
+
+这轮之后，更明确的一点是：
+
+`goodjob` 真正稳定可交付的东西，应该优先是：
+
+- 单浏览器
+- 单稳定主线
+- 明确可解释的规则筛选
+- 稳定的打招呼与发简历流程
+- 能挂机但不过度依赖多实例并发
+
+而不是一上来把：
+- 多浏览器并发
+- 多账号并发
+- 多标签页复杂广播协作
+
+一起堆上去。
+
+这不是说后者永远不做，而是：
+
+**应该先有一条足够稳的“生产主线”，再做并行副本实验。**
+
+---
+
+### 当前阶段建议
+
+#### 正式推荐老板使用的方案
+- `goodjob` 原项目 + Edge
+- 关闭 Boss 页面休眠
+- 当前空轮自动切关键词继续挂机
+- 需要跑第二个账号时，先用手动切账号方式完成
+
+#### 当前不推荐老板继续投入精力的方案
+- `goodjob-chrome` Chrome 副本并行跑
+- 继续把双浏览器并发当作当前生产方案
+
+#### 以后如果要重启 Chrome 方案
+建议单独开一轮“多标签协作链”专项修复，而不是边用边修。
+
+---
+
 ## 2026-03-31 固定大招呼语更新
 
 ### 本次目标
@@ -935,3 +1163,248 @@
 
 - 关键词切换后，Boss 页面是否继续保留已选的城市 / 薪资 / 工作经验筛选，仍以实际前端行为为准；这部分需要老板继续实测确认。
 - 当前仍保留每轮手动筛选窗口；如果后续确认切关键词后筛选条件仍能稳定保留，这个体验会更顺。
+
+## 2026-04-13 动态简历路由（第一阶段：后端决策层）
+
+### 本次目标
+
+- 在不破坏当前“是否投递”评分主链的前提下，为后续“一账号双简历”场景补上独立路由能力。
+- 让后端不再只返回 `score`，而是同时返回：
+  - `profile`
+  - `introduce`
+  - `resumeIndex`
+- 明确区分：
+  - `score` 负责“投不投”
+  - `profile` 负责“投哪份简历 / 发哪段招呼语”
+
+### 本次修改
+
+- 修改了 [config.py](C:/Users/czc/Desktop/czc_code/goodjob/config.py)
+  - 新增 `deliveryProfiles`
+    - `ai -> introduce + resumeIndex=0`
+    - `ops -> introduce + resumeIndex=1`
+  - 新增 `routing`
+    - `defaultProfile`
+    - `minMargin`
+    - AI / 运维两套独立路由关键词
+  - 新增 `Config.get_delivery_profile()`
+
+- 修改了 [core.py](C:/Users/czc/Desktop/czc_code/goodjob/core.py)
+  - 保留原有 `evaluateJobMatch()` 作为“是否投递”评分器
+  - 新增 `routeJobProfile()` 作为独立路由判定器
+  - 新增 `evaluateJobDelivery()`，统一产出：
+    - `score`
+    - `profile`
+    - `introduce`
+    - `resumeIndex`
+    - `route_scores`
+    - `route_reason`
+
+- 修改了 [main.py](C:/Users/czc/Desktop/czc_code/goodjob/main.py)
+  - `/get-job-score` 改为调用 `evaluateJobDelivery()`
+  - 返回结构从仅 `score` 扩展为：
+    - `score`
+    - `profile`
+    - `introduce`
+    - `resumeIndex`
+    - `routeReason`
+    - `routeScores`
+  - 终端日志新增：
+    - `profile`
+    - `route_ai`
+    - `route_ops`
+    - `route_reason`
+
+- 修改了 [user_config.json](C:/Users/czc/Desktop/czc_code/goodjob/user_config.json)
+- 修改了 [user_config.example.json](C:/Users/czc/Desktop/czc_code/goodjob/user_config.example.json)
+  - 同步补入 `deliveryProfiles` 与 `routing` 结构
+
+### 本次验证
+
+- 已执行 Python 语法检查：
+  - `config.py`
+  - `core.py`
+  - `main.py`
+- 已用 Windows 侧 Miniconda Python 直接执行核心函数验证
+  - `AI应用工程师 -> profile=ai -> resumeIndex=0`
+  - `运维开发工程师 -> profile=ops -> resumeIndex=1`
+  - `SRE -> profile=ops -> resumeIndex=1`
+  - `AI Agent后端开发工程师 -> profile=ai -> resumeIndex=0`
+- 已直接执行 `main.py` 中 `/get-job-score` 对应逻辑验证接口返回结构
+  - 能返回 `score + profile + introduce + resumeIndex + routeScores`
+
+### 当前结论
+
+- 第一阶段后端决策层已完成并验证通过。
+- 当前仓库已经具备“同一岗位 -> 后端给出完整投递决策”的能力。
+- 但浏览器前端此时尚未真正消费这些新字段，仍需要第二阶段把 `web_script.js` 接上。
+
+## 2026-04-13 动态简历路由（第二阶段：前端接入层）
+
+### 本次目标
+
+- 在不推翻现有 Boss 页面自动化主链的前提下，把后端返回的投递决策真正接入前端执行层。
+- 让前端在搜索页和聊天页都能按岗位方向切换：
+  - 打招呼文案
+  - 简历索引
+
+### 本次修改
+
+- 修改了 [web_script.js](C:/Users/czc/Desktop/czc_code/goodjob/web_script.js)
+  - `Api.getJobScore()` 不再只提取 `score`，而是直接返回完整决策对象
+  - 搜索页打招呼前：
+    - 记录当前岗位的 `decision`
+    - 日志新增 `profile / resumeIndex`
+    - `SAY_HI` 广播返回改为优先使用当前岗位对应的 `introduce`
+  - 聊天页首次打招呼：
+    - 改为按后端返回的 `decision.introduce` 发送，而不是固定使用一个全局文案
+  - `sendResume()` 改为支持 `sendResume(resumeIndex)`
+  - 聊天页检测到新消息且尚未发简历时：
+    - 重新拉取当前岗位详情
+    - 重新请求后端决策
+    - 按 `decision.resumeIndex` 发送对应简历
+
+### 本次验证
+
+- 已执行 `web_script.js` 语法检查（`node --check`）
+- 已重新执行 Python 语法检查，确认本轮前端接入未破坏后端代码可加载性
+- 已重新执行 Windows 侧接口验证，确认 `/get-job-score` 仍能稳定返回：
+  - `ai -> resumeIndex=0`
+  - `ops -> resumeIndex=1`
+
+### 当前结论
+
+- 第二阶段代码接入已完成。
+- 现阶段已经形成完整链路：
+  - 后端产出 `score + profile + introduce + resumeIndex`
+  - 前端按岗位方向切不同招呼语与简历索引
+- 当前剩余的真实风险不在语法与接口，而在 Boss 页面实际运行环境：
+  - 多简历场景下是否总是弹“大窗选择简历”而不是“小窗默认发送”
+  - 招聘方先发消息 / 我先打招呼 / 已聊过再补发简历这几种时序下，页面元素是否始终稳定
+  - 这些需要老板继续在真实 Boss 页面中实测
+
+## 2026-04-13 启动脚本收尾（移除旧的 1/2 手动选方向）
+
+### 本次目标
+
+- 让 `start_backend.bat` 与当前“统一后端 + 动态路由”的主逻辑保持一致。
+- 去掉已经过时的 `1 - AI / 2 - OPS` 人工选择步骤，避免老板误以为仍需手动切整个后端方向。
+
+### 本次修改
+
+- 修改了 [start_backend.bat](C:/Users/czc/Desktop/czc_code/goodjob/start_backend.bat)
+  - 删除了旧的 `1 / 2` 方向选择菜单
+  - 删除了 `GOODJOB_PROFILE` / `GOODJOB_PROFILE_LABEL` 相关分支
+  - 恢复为统一后端直接启动：
+    - 固定使用 `C:\Users\czc\miniconda3\python.exe`
+    - 直接执行 `main.py`
+
+### 当前结论
+
+- 现在双击 `start_backend.bat` 后，将直接启动统一后端。
+- 岗位属于 AI 还是运维，不再由启动时人工选择，而是完全交给后端 routing + 前端执行层动态决定。
+
+## 2026-04-13 统一关键词池收尾（修复 `/client-config.tags` 仍走单 profile 残留）
+
+### 问题复盘
+
+- 在完成“统一后端 + 动态路由”后，老板指出搜索关键词轮转仍未真正把 AI / 运维两套关键词揉在一起。
+- 重新排查后确认：
+  - `web_script.js` 的关键词轮转确实优先读取 `/client-config.tags`
+  - 但 `config.py` 中 `get_client_config()` 仍直接返回 `Config.tags`
+  - 而 `Config.tags` 仍受旧的单 profile 加载路径影响，只会落到一侧标签
+- 这说明当时虽然完成了“投递路由”改造，但没有把“搜索关键词来源”这个同层架构点一起闭环收尾。
+
+### 本次修改
+
+- 修改了 [config.py](C:/Users/czc/Desktop/czc_code/goodjob/config.py)
+  - 新增 `_load_raw_user_config()` 与 `RAW_USER_CONFIG`
+    - 单独保留原始 `user_config.json` 结构，避免被 `load_user_config()` 抹平后丢失 `profiles` 层信息
+  - 新增 `Config.get_merged_tags()`
+    - 合并：
+      - 当前基础 `tags`
+      - `profiles.ai.tags`
+      - `profiles.ops.tags`
+    - 自动去重并保留顺序
+  - 新增 `Config.get_default_introduce()` 作为统一后端场景下的兜底文案来源
+  - `Config.get_client_config()` 改为返回：
+    - `profile='mixed'`
+    - `tags=Config.get_merged_tags()`
+    - `introduce=Config.get_default_introduce()`
+
+- 修改了 [main.py](C:/Users/czc/Desktop/czc_code/goodjob/main.py)
+  - `/tags` 改为返回 `Config.get_merged_tags()`
+  - `/get-introduce` 改为返回 `Config.get_default_introduce()`
+
+### 本次验证
+
+- 已重新执行 Python 语法检查：
+  - `config.py`
+  - `main.py`
+- 已用 Windows 侧 Miniconda Python 直接执行接口验证：
+  - `/client-config.tags` 已包含 AI + 运维两套关键词
+  - `/tags` 旧接口回退路径也已返回混合关键词池
+  - `/get-introduce` 返回统一后端场景下的默认兜底文案
+
+### 当前结论
+
+- 当前关键词轮转来源已修正为“统一混合关键词池”，不再只落到单一 profile。
+- 至此，统一后端场景下的三层关键入口已基本对齐：
+  - 搜索关键词来源
+  - 投不投评分
+  - 投递路由（文案 / 简历索引）
+
+## 2026-04-13 本地决策日志落盘（便于回顾与调参）
+
+### 本次目标
+
+- 给“每次岗位计算 / 每次投递决策”补上本地留痕，方便老板后续回顾：
+  - 岗位标题
+  - 岗位原始信息
+  - 匹配分数
+  - 路由方向
+  - 对应简历索引
+  - 具体命中原因
+- 避免后续优化算法时只能凭印象说“好像哪里判错了”。
+
+### 本次修改
+
+- 修改了 [main.py](C:/Users/czc/Desktop/czc_code/goodjob/main.py)
+  - 新增 `job_decisions.jsonl` 本地日志文件
+  - 新增 `append_job_decision_log()`
+  - 每次 `/get-job-score` 计算完成后，都会追加写入一条 JSONL 记录
+
+### 当前落盘字段
+
+每条日志当前包含：
+- `loggedAt`
+- `title`
+- `detail`
+- `matchedField`
+- `keyword`
+- `score`
+- `profile`
+- `introduce`
+- `resumeIndex`
+- `routeReason`
+- `routeScores`
+- `titleScore`
+- `detailScore`
+- `comboScore`
+- `titlePenaltyScore`
+- `penaltyScore`
+- `reason`
+- `delayMs`
+- `rawJob`
+
+### 本次验证
+
+- 已重新执行 `main.py` Python 语法检查
+
+### 当前结论
+
+- 现在每次岗位评分与路由决策，都会在项目目录本地追加一条记录到 `job_decisions.jsonl`。
+- 这份日志后续可直接拿来做：
+  - 判错回放
+  - 规则调优
+  - 典型岗位案例归类

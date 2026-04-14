@@ -474,9 +474,7 @@
         getJobScore(title, salary, detail) {
             const data = `# 职位名称\n${title}\n\n# 薪资范围\n${salary}\n\n# 职位描述\n${detail}`;
             return new Promise((resolve, reject) => {
-                this.__http('/get-job-score', 'POST', JSON.stringify(data)).then(res => {
-                    resolve(res.score);
-                }).catch(reject);
+                this.__http('/get-job-score', 'POST', JSON.stringify(data)).then(resolve).catch(reject);
             });
         }
 
@@ -513,6 +511,16 @@
                 this.__http('/is-need-works', 'POST', JSON.stringify(msgs)).then(res => {
                     resolve(res.need);
                 }).catch(reject);
+            });
+        }
+
+        /**
+         * 记录动作日志
+         * @param {object} payload 动作信息
+         */
+        logAction(payload) {
+            return new Promise((resolve, reject) => {
+                this.__http('/log-action', 'POST', JSON.stringify(payload)).then(resolve).catch(reject);
             });
         }
     }
@@ -826,6 +834,7 @@
 
             let pendingGreetTimer = null;
             let pendingGreetTitle = '';
+            let pendingGreetDecision = null;
 
             const clearPendingGreet = () => {
                 if (pendingGreetTimer) {
@@ -833,11 +842,13 @@
                     pendingGreetTimer = null;
                 }
                 pendingGreetTitle = '';
+                pendingGreetDecision = null;
             };
 
-            const armPendingGreet = (title) => {
+            const armPendingGreet = (title, decision = null) => {
                 clearPendingGreet();
                 pendingGreetTitle = title;
+                pendingGreetDecision = decision;
                 pendingGreetTimer = setTimeout(() => {
                     logger.add(`职位 [${pendingGreetTitle}] 打招呼超时，已跳过`);
                     clearPendingGreet();
@@ -857,8 +868,9 @@
                         logger.add(`第 ${currentRound} 轮已处理完当前加载岗位，准备进入下一轮`);
                     }
                     if (emptyRounds >= OPTIONS.maxEmptyRounds) {
-                        logger.add(`连续 ${OPTIONS.maxEmptyRounds} 轮没有新岗位，已自动停止，避免空转`);
-                        return;
+                        logger.add(`连续 ${OPTIONS.maxEmptyRounds} 轮没有新岗位，自动切换到下一个关键词继续挂机`);
+                        emptyRounds = 0;
+                        return startRound();
                     }
                     await tools.asyncSleep(OPTIONS.roundRestartDelayMs);
                     if (this.pause) {
@@ -869,6 +881,14 @@
                     await startRound();
                 } finally {
                     roundTransitioning = false;
+                }
+            };
+
+            const logAction = async (payload) => {
+                try {
+                    await api.logAction(payload);
+                } catch (e) {
+                    console.log('logAction failed', e);
                 }
             };
 
@@ -892,17 +912,20 @@
             const addToChatList = async (url) => {
                 return new Promise((resolve, reject) => {
                     fetch(url)
-                        .then(resp => {
+                        .then(async resp => {
                             if (!(resp.ok && resp.status === 200)) {
-                                logger.add('boss直聘网络连接出错');
-                                return reject();
+                                const bodyText = await resp.text().catch(() => '');
+                                logger.add(`boss直聘网络连接出错: status=${resp.status}`);
+                                return reject(new Error(`http_${resp.status}:${bodyText.slice(0, 300)}`));
                             }
                             return resp.json();
                         }).then(resp => {
                             if (resp.code === 0) return resolve(resp);
-                            const msg = resp.zpData.bizData.chatRemindDialog.title;
+                            const msg = resp?.zpData?.bizData?.chatRemindDialog?.title || resp?.message || '未知错误';
                             logger.add(`打招呼失败: ${msg}`);
-                            reject();
+                            reject(new Error(`biz_fail:${msg}`));
+                        }).catch(err => {
+                            reject(err instanceof Error ? err : new Error(String(err)));
                         });
                 });
             };
@@ -916,20 +939,40 @@
                         this.broadcast.reply(
                             from,
                             this.bcTypes.SAY_HI,
-                            { introduce: this.introduce },
+                            {
+                                introduce: pendingGreetDecision?.introduce || this.introduce,
+                                profile: pendingGreetDecision?.profile || 'ai',
+                                resumeIndex: pendingGreetDecision?.resumeIndex ?? OPTIONS.resumeIndex,
+                            },
                             data.requestId,
                             data.responseType
                         );
                         return;
                     }
                     // 告知结果
+                    const finalDecision = pendingGreetDecision;
+                    const finalTitle = pendingGreetTitle;
                     clearPendingGreet();
                     if (data.success) {
                         logger.add(`打招呼成功`);
+                        await logAction({
+                            action: 'greet_sent',
+                            scene: 'search',
+                            title: finalTitle,
+                            profile: finalDecision?.profile || 'ai',
+                            resumeIndex: finalDecision?.resumeIndex ?? OPTIONS.resumeIndex,
+                        });
                     }
                     // 出错了
                     else {
                         logger.add(`打招呼失败`);
+                        await logAction({
+                            action: 'greet_failed',
+                            scene: 'search',
+                            title: finalTitle,
+                            profile: finalDecision?.profile || 'ai',
+                            resumeIndex: finalDecision?.resumeIndex ?? OPTIONS.resumeIndex,
+                        });
                     }
                     loop();
                 });
@@ -994,32 +1037,96 @@
                     const jobInfo = await getJobInfo(href);
                     if (jobInfo.skip) {
                         logger.add(`职位跳过: ${jobInfo.skipReason}`);
+                        await logAction({
+                            action: 'job_skip',
+                            scene: 'search',
+                            title: jobInfo.title || null,
+                            salary: jobInfo.salary || null,
+                            detail: jobInfo.detail || null,
+                            reason: jobInfo.skipReason,
+                        });
                         return loop();
                     }
                     processedJobHrefs.add(href);
                     // 如果聊过，下一个
                     if (jobInfo.talked) {
                         logger.add(`职位 [${jobInfo.title}] 已经聊过，下一个`);
+                        await logAction({
+                            action: 'job_already_talked',
+                            scene: 'search',
+                            title: jobInfo.title,
+                            salary: jobInfo.salary,
+                        });
                         return loop();
                     }
                     // 否则发送消息计算匹配度
                     logger.add(`开始计算职位 [${jobInfo.title}] 的匹配度`);
-                    const score = await api.getJobScore(jobInfo.title, jobInfo.salary, jobInfo.detail);
-                    logger.add(`匹配度: ${score}`);
+                    const decision = await api.getJobScore(jobInfo.title, jobInfo.salary, jobInfo.detail);
+                    logger.add(`匹配度: ${decision.score} | 路由: ${decision.profile} | 简历索引: ${decision.resumeIndex}`);
+                    await logAction({
+                        action: 'job_decision_consumed',
+                        scene: 'search',
+                        title: jobInfo.title,
+                        salary: jobInfo.salary,
+                        score: decision.score,
+                        profile: decision.profile,
+                        resumeIndex: decision.resumeIndex,
+                        routeReason: decision.routeReason,
+                        routeScores: decision.routeScores,
+                    });
                     // 如果分数达到阈值，打个招呼
-                    if (score >= OPTIONS.thread) {
-                        logger.add(`正在给职位 [${jobInfo.title}] 发送打招呼消息`);
+                    if (decision.score >= OPTIONS.thread) {
+                        logger.add(`正在给职位 [${jobInfo.title}] 发送打招呼消息（${decision.profile}）`);
+                        await logAction({
+                            action: 'greet_queued',
+                            scene: 'search',
+                            title: jobInfo.title,
+                            salary: jobInfo.salary,
+                            profile: decision.profile,
+                            resumeIndex: decision.resumeIndex,
+                            score: decision.score,
+                        });
                         // 判断是否有提醒返回
-                        addToChatList(jobInfo.addUrl).then(() => {
-                            armPendingGreet(jobInfo.title);
+                        addToChatList(jobInfo.addUrl).then(async () => {
+                            await logAction({
+                                action: 'chat_open_requested',
+                                scene: 'search',
+                                title: jobInfo.title,
+                                chatUrl: jobInfo.chatUrl,
+                                profile: decision.profile,
+                                resumeIndex: decision.resumeIndex,
+                            });
+                            armPendingGreet(jobInfo.title, decision);
                             tools.openTabNSetTimestamp(jobInfo.chatUrl, this.targets.chatGreet);
-                        }).catch(() => {
+                        }).catch(async (err) => {
+                            await logAction({
+                                action: 'greet_queue_failed',
+                                scene: 'search',
+                                title: jobInfo.title,
+                                profile: decision.profile,
+                                resumeIndex: decision.resumeIndex,
+                                addUrl: jobInfo.addUrl,
+                                chatUrl: jobInfo.chatUrl,
+                                reason: String(err),
+                            });
                             clearPendingGreet();
                             loop();
                         });
                     }
                     // 否则下一轮
-                    else loop();
+                    else {
+                        await logAction({
+                            action: 'job_below_threshold',
+                            scene: 'search',
+                            title: jobInfo.title,
+                            salary: jobInfo.salary,
+                            score: decision.score,
+                            threshold: OPTIONS.thread,
+                            profile: decision.profile,
+                            resumeIndex: decision.resumeIndex,
+                        });
+                        loop();
+                    }
                 } catch (e) {
                     console.log(e);
                     logger.add(`循环时出错: ${e}`);
@@ -1256,12 +1363,24 @@
                 loop();
 
                 try {
-                    const introduce = (await this.broadcast.sendAndReceive(this.targets.search, this.bcTypes.SAY_HI)).introduce;
+                    const greetDecision = await this.broadcast.sendAndReceive(this.targets.search, this.bcTypes.SAY_HI);
+                    const introduce = greetDecision.introduce;
                     await sendMsg(introduce);
+                    await logAction({
+                        action: 'greet_message_sent',
+                        scene: 'chat_greet',
+                        profile: greetDecision.profile || 'ai',
+                        resumeIndex: greetDecision.resumeIndex ?? OPTIONS.resumeIndex,
+                    });
                     this.broadcast.send(this.targets.search, this.bcTypes.SAY_HI, { success: true }).then(() => {
                         this.broadcast.destroy();
                     });
                 } catch (e) {
+                    await logAction({
+                        action: 'greet_message_failed',
+                        scene: 'chat_greet',
+                        reason: String(e),
+                    });
                     this.broadcast.send(this.targets.search, this.bcTypes.SAY_HI, { success: false }).then(() => {
                         this.broadcast.destroy();
                     });
@@ -1364,7 +1483,7 @@
             };
 
             // 发送简历
-            const sendResume = async () => {
+            const sendResume = async (resumeIndex = OPTIONS.resumeIndex) => {
                 const sendBtn = await tools.endlessFind(SELECTORS.ZHIPIN.CHAT.RESUMESEND);
                 sendBtn.click();
 
@@ -1373,18 +1492,27 @@
                 if (smallDialog) {
                     smallDialog.querySelector(SELECTORS.ZHIPIN.CHAT.RESUMEMODALCONFIRM).click();
                     await sendMsg('已发送，请查收');
-                    return;
+                    return {
+                        mode: 'small_dialog',
+                        selectedResumeIndex: resumeIndex,
+                    };
                 }
 
                 // 弹出大窗让选择
                 const resumeCtn = await tools.endlessFind(SELECTORS.ZHIPIN.CHAT.RESUMELIST);
                 const confirm = await tools.endlessFind(SELECTORS.ZHIPIN.CHAT.RESUMESENDCONFIRM);
-                const resume = resumeCtn.querySelectorAll(SELECTORS.ZHIPIN.CHAT.RESUMELISTITEM)[OPTIONS.resumeIndex];
+                const resumes = resumeCtn.querySelectorAll(SELECTORS.ZHIPIN.CHAT.RESUMELISTITEM);
+                const fallbackIndex = resumes[resumeIndex] ? resumeIndex : (resumes[OPTIONS.resumeIndex] ? OPTIONS.resumeIndex : 0);
+                const resume = resumes[fallbackIndex];
                 await tools.asyncSleep(300);
                 resume.click();
                 await tools.asyncSleep(300);
                 confirm.click();
                 await sendMsg('已发送，请查收');
+                return {
+                    mode: 'resume_list',
+                    selectedResumeIndex: fallbackIndex,
+                };
             };
 
             // 发送作品集
@@ -1412,10 +1540,17 @@
             const chat = async () => {
                 // api
                 const api = new Api();
+                const logAction = async (payload) => {
+                    try {
+                        await api.logAction(payload);
+                    } catch (e) {
+                        console.log('logAction failed', e);
+                    }
+                };
                 // 开始广播
                 startBroadcast(this.targets.chat);
-                // 获取自我介绍
-                const introduce = (await this.broadcast.sendAndReceive(
+                // 获取默认自我介绍（兜底）
+                const defaultIntroduce = (await this.broadcast.sendAndReceive(
                     this.targets.search,
                     this.bcTypes.INTRODUCE,
                 )).introduce;
@@ -1475,20 +1610,56 @@
                                 const jobInfo = await this.broadcast.receive(this.targets.detail, this.bcTypes.GET_JOB_INFO);
                                 // 获取职位匹配度
                                 status(`开始计算职位 [${jobInfo.title}] 的匹配度`);
-                                const score = await api.getJobScore(jobInfo.title, jobInfo.salary, jobInfo.detail);
+                                const decision = await api.getJobScore(jobInfo.title, jobInfo.salary, jobInfo.detail);
+                                status(`匹配度: ${decision.score} | 路由: ${decision.profile} | 简历索引: ${decision.resumeIndex}`);
+                                await logAction({
+                                    action: 'job_decision_consumed',
+                                    scene: 'chat',
+                                    title: jobInfo.title,
+                                    salary: jobInfo.salary,
+                                    score: decision.score,
+                                    profile: decision.profile,
+                                    resumeIndex: decision.resumeIndex,
+                                    routeReason: decision.routeReason,
+                                    routeScores: decision.routeScores,
+                                });
                                 // 如果分数达到阈值并且未聊过天，打个招呼
-                                if (score >= OPTIONS.thread && !chatInfo.msgs.length) {
-                                    status(`正在给职位 [${jobInfo.title}] 发送打招呼消息`);
+                                if (decision.score >= OPTIONS.thread && !chatInfo.msgs.length) {
+                                    status(`正在给职位 [${jobInfo.title}] 发送打招呼消息（${decision.profile}）`);
                                     try {
-                                        await sendMsg(introduce);
+                                        await sendMsg(decision.introduce || defaultIntroduce);
+                                        await logAction({
+                                            action: 'chat_greet_sent',
+                                            scene: 'chat',
+                                            title: jobInfo.title,
+                                            profile: decision.profile,
+                                            resumeIndex: decision.resumeIndex,
+                                        });
                                         status(`打招呼成功`);
                                     } catch (e) {
+                                        await logAction({
+                                            action: 'chat_greet_failed',
+                                            scene: 'chat',
+                                            title: jobInfo.title,
+                                            profile: decision.profile,
+                                            resumeIndex: decision.resumeIndex,
+                                            reason: String(e),
+                                        });
                                         status(`打招呼失败: ${e}`);
                                     }
                                     continue;
                                 }
                                 // 未达到阈值，直接下一个
-                                else if (score < OPTIONS.thread) {
+                                else if (decision.score < OPTIONS.thread) {
+                                    await logAction({
+                                        action: 'chat_rejected_below_threshold',
+                                        scene: 'chat',
+                                        title: jobInfo.title,
+                                        score: decision.score,
+                                        threshold: OPTIONS.thread,
+                                        profile: decision.profile,
+                                        resumeIndex: decision.resumeIndex,
+                                    });
                                     await sendMsg('不好意思，不太合适哈，祝早日找到合适的人选。')
                                     continue;
                                 }
@@ -1497,8 +1668,23 @@
                             // 只要对方发来新消息且还没发过简历，就直接发送简历，不再调用大模型聊天
                             if (!chatInfo.resumeSended) {
                                 isChat = false;
-                                status('检测到新消息，直接发送简历');
-                                await sendResume();
+                                localStorage.setItem(this.targets.chat, new Date().getTime());
+                                chatInfo.jobEl.click();
+                                status(`正在获取职位详情（用于确定简历路由）`);
+                                const jobInfo = await this.broadcast.receive(this.targets.detail, this.bcTypes.GET_JOB_INFO);
+                                const decision = await api.getJobScore(jobInfo.title, jobInfo.salary, jobInfo.detail);
+                                status(`检测到新消息，直接发送简历（${decision.profile} / 简历索引 ${decision.resumeIndex}）`);
+                                const resumeResult = await sendResume(decision.resumeIndex);
+                                await logAction({
+                                    action: 'resume_sent',
+                                    scene: 'chat',
+                                    title: jobInfo.title,
+                                    salary: jobInfo.salary,
+                                    profile: decision.profile,
+                                    requestedResumeIndex: decision.resumeIndex,
+                                    selectedResumeIndex: resumeResult?.selectedResumeIndex ?? decision.resumeIndex,
+                                    sendMode: resumeResult?.mode || 'unknown',
+                                });
                                 status('发送成功');
                             }
                             // 是否需要作品集（当前关闭自动发送，仅保留原入口）

@@ -1,13 +1,52 @@
 from datetime import datetime
 import asyncio
 import random
+import json
+from pathlib import Path
 from fastapi import FastAPI, Body, HTTPException
-from core import replyMsg, isNeedResume, isNeedWorks, evaluateJobMatch
+from core import replyMsg, isNeedResume, isNeedWorks, evaluateJobDelivery
 from schema import Msg
 from config import Config
 
 
 app = FastAPI()
+LOG_PATH = Path(__file__).resolve().parent / 'job_decisions.jsonl'
+ACTION_LOG_PATH = Path(__file__).resolve().parent / 'job_actions.jsonl'
+
+
+def append_job_decision_log(result: dict, raw_job: str, delay_ms: int):
+    log_record = {
+        'loggedAt': datetime.now().isoformat(timespec='seconds'),
+        'title': result.get('title'),
+        'detail': result.get('detail'),
+        'matchedField': result.get('matched_field'),
+        'keyword': result.get('keyword'),
+        'score': result.get('score'),
+        'profile': result.get('profile'),
+        'introduce': result.get('introduce'),
+        'resumeIndex': result.get('resumeIndex'),
+        'routeReason': result.get('route_reason'),
+        'routeScores': result.get('route_scores'),
+        'titleScore': result.get('title_score'),
+        'detailScore': result.get('detail_score'),
+        'comboScore': result.get('combo_score'),
+        'titlePenaltyScore': result.get('title_penalty_score'),
+        'penaltyScore': result.get('penalty_score'),
+        'reason': result.get('reason'),
+        'delayMs': delay_ms,
+        'rawJob': raw_job,
+    }
+    with LOG_PATH.open('a', encoding='utf-8') as f:
+        f.write(json.dumps(log_record, ensure_ascii=False) + '\n')
+
+
+def append_job_action_log(action: dict):
+    action_record = {
+        'loggedAt': datetime.now().isoformat(timespec='seconds'),
+        **action,
+    }
+    with ACTION_LOG_PATH.open('a', encoding='utf-8') as f:
+        f.write(json.dumps(action_record, ensure_ascii=False) + '\n')
 
 
 @app.get("/tags", summary="获取职位标签")
@@ -20,7 +59,7 @@ async def get_tags():
 @app.get("/get-introduce", summary="获取自我介绍")
 async def get_introduce():
     return {
-        'introduce': Config.introduce
+        'introduce': Config.get_default_introduce()
     }
 
 
@@ -31,7 +70,7 @@ async def get_client_config():
 
 @app.post("/get-job-score", summary="获取职位匹配度")
 async def get_job_score(job: str = Body(..., description="职位信息")):
-    result = evaluateJobMatch(job)
+    result = evaluateJobDelivery(job)
     delay_ms = max(0, Config.job_score_delay_base_ms + random.randint(
         -Config.job_score_delay_jitter_ms,
         Config.job_score_delay_jitter_ms,
@@ -57,13 +96,29 @@ async def get_job_score(job: str = Body(..., description="职位信息")):
         f"penalty_score={result['penalty_score']} | "
         f"delay_ms={delay_ms} | "
         f"score={result['score']} | "
+        f"profile={result['profile']} | "
+        f"route_ai={result['route_scores']['ai']} | "
+        f"route_ops={result['route_scores']['ops']} | "
+        f"route_reason={result['route_reason']} | "
         f"reason={result['reason']}",
         flush=True
     )
+    append_job_decision_log(result, job, delay_ms)
     await asyncio.sleep(delay_ms / 1000)
     return {
-        'score': result['score']
+        'score': result['score'],
+        'profile': result['profile'],
+        'introduce': result['introduce'],
+        'resumeIndex': result['resumeIndex'],
+        'routeReason': result['route_reason'],
+        'routeScores': result['route_scores'],
     }
+
+
+@app.post("/log-action", summary="记录前端动作日志")
+async def log_action(action: dict = Body(..., description="动作日志")):
+    append_job_action_log(action)
+    return {'success': True}
 
 
 @app.post("/reply", summary="回复消息")
