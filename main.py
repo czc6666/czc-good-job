@@ -4,7 +4,7 @@ import random
 import json
 from pathlib import Path
 from fastapi import FastAPI, Body, HTTPException
-from core import replyMsg, isNeedResume, isNeedWorks, evaluateJobDelivery
+from core import replyMsg, isNeedResume, isNeedWorks, evaluateSingleRouteDelivery
 from schema import Msg
 from config import Config
 
@@ -22,11 +22,8 @@ def append_job_decision_log(result: dict, raw_job: str, delay_ms: int):
         'matchedField': result.get('matched_field'),
         'keyword': result.get('keyword'),
         'score': result.get('score'),
-        'profile': result.get('profile'),
         'introduce': result.get('introduce'),
         'resumeIndex': result.get('resumeIndex'),
-        'routeReason': result.get('route_reason'),
-        'routeScores': result.get('route_scores'),
         'titleScore': result.get('title_score'),
         'detailScore': result.get('detail_score'),
         'comboScore': result.get('combo_score'),
@@ -70,7 +67,7 @@ async def get_client_config():
 
 @app.post("/get-job-score", summary="获取职位匹配度")
 async def get_job_score(job: str = Body(..., description="职位信息")):
-    result = evaluateJobDelivery(job)
+    result = evaluateSingleRouteDelivery(job)
     delay_ms = max(0, Config.job_score_delay_base_ms + random.randint(
         -Config.job_score_delay_jitter_ms,
         Config.job_score_delay_jitter_ms,
@@ -96,10 +93,6 @@ async def get_job_score(job: str = Body(..., description="职位信息")):
         f"penalty_score={result['penalty_score']} | "
         f"delay_ms={delay_ms} | "
         f"score={result['score']} | "
-        f"profile={result['profile']} | "
-        f"route_ai={result['route_scores']['ai']} | "
-        f"route_ops={result['route_scores']['ops']} | "
-        f"route_reason={result['route_reason']} | "
         f"reason={result['reason']}",
         flush=True
     )
@@ -107,11 +100,8 @@ async def get_job_score(job: str = Body(..., description="职位信息")):
     await asyncio.sleep(delay_ms / 1000)
     return {
         'score': result['score'],
-        'profile': result['profile'],
         'introduce': result['introduce'],
         'resumeIndex': result['resumeIndex'],
-        'routeReason': result['route_reason'],
-        'routeScores': result['route_scores'],
     }
 
 

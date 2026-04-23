@@ -3,18 +3,6 @@ import json
 import os
 
 
-PROFILE_ENV_KEY = 'GOODJOB_PROFILE'
-DEFAULT_PROFILE_NAME = 'ai'
-PROFILE_ALIASES = {
-    '1': 'ai',
-    '2': 'ops',
-    'ai': 'ai',
-    'ops': 'ops',
-    'op': 'ops',
-    'devops': 'ops',
-}
-
-
 DEFAULT_USER_CONFIG = {
     'resume_name': 'resume.md',
     'think_model': 'qwen3:0.6b',
@@ -25,98 +13,6 @@ DEFAULT_USER_CONFIG = {
     'backend': {
         'job_score_delay_base_ms': 4000,
         'job_score_delay_jitter_ms': 500,
-    },
-    'deliveryProfiles': {
-        'ai': {
-            'introduce': '您好，我是江西理工大学网络与信息安全硕士，做过 AI 工具站开发上线、科研数据链路构建和 Linux 服务器运维。近期持续使用 Codex、Claude Code 等工具辅助开发，也将 OpenClaw 接入信息整理、知识库联动和自动化工作流，具备把 AI 能力落到真实业务场景中的工程实现经验。',
-            'resumeIndex': 0,
-        },
-        'ops': {
-            'introduce': '您好，我是江西理工大学网络与信息安全硕士，长期参与实验室 Linux 服务器环境搭建、运维和科研数据链路支撑，做过环境部署、故障排查、自动化脚本开发和稳定性保障。近期也持续使用 Codex、Claude Code 等工具辅助开发，并将 OpenClaw 接入自动化处理与日常工作流。',
-            'resumeIndex': 1,
-        },
-    },
-    'routing': {
-        'defaultProfile': 'ai',
-        'minMargin': 4,
-        'ai': {
-            'title_strong_keywords': {
-                'ai应用': 10,
-                '人工智能应用': 10,
-                'ai开发': 9,
-                'ai agent': 10,
-                '智能体': 10,
-                '大模型应用': 9,
-                'llm应用': 9,
-                '工作流工程师': 8,
-                'ai产品经理': 7,
-            },
-            'title_medium_keywords': {
-                'ai': 6,
-                'agent': 6,
-                'workflow': 5,
-                '工作流': 5,
-                'prompt': 4,
-                '提示词': 4,
-                'rag': 5,
-                'mcp': 4,
-                '知识库': 4,
-            },
-            'detail_keywords': {
-                'ai agent': 4,
-                '智能体': 4,
-                'llm': 4,
-                '大模型': 4,
-                '工作流': 3,
-                'workflow': 3,
-                'rag': 3,
-                '知识库': 3,
-                'prompt': 2,
-                '提示词': 2,
-                'embedding': 2,
-                'rerank': 2,
-                '知识召回': 2,
-            },
-        },
-        'ops': {
-            'title_strong_keywords': {
-                '运维开发工程师': 10,
-                '运维开发': 10,
-                '运维工程师': 10,
-                'sre': 10,
-                'devops': 10,
-                'linux运维': 9,
-                '平台工程师': 9,
-                '站点可靠性工程师': 10,
-                '可靠性工程师': 9,
-                '自动化运维': 9,
-            },
-            'title_medium_keywords': {
-                '运维': 6,
-                'linux': 5,
-                '云平台': 5,
-                '基础架构': 5,
-                '发布工程师': 5,
-                '平台工程': 5,
-            },
-            'detail_keywords': {
-                'linux': 3,
-                '服务器': 3,
-                '监控': 3,
-                'prometheus': 3,
-                'grafana': 3,
-                'docker': 3,
-                'k8s': 3,
-                'kubernetes': 3,
-                '故障处理': 3,
-                '高可用': 3,
-                '部署': 2,
-                '发布': 2,
-                'shell': 2,
-                '日志': 2,
-                '自动化运维': 3,
-            },
-        },
     },
     'frontend': {
         'serverHost': 'http://127.0.0.1:8000',
@@ -356,16 +252,6 @@ def _apply_legacy_compat(config: dict, user_config: dict) -> dict:
     return config
 
 
-def _normalize_profile_name(profile_name: str | None) -> str:
-    raw = (profile_name or '').strip().lower()
-    if not raw:
-        return DEFAULT_PROFILE_NAME
-    return PROFILE_ALIASES.get(raw, raw)
-
-
-ACTIVE_PROFILE = _normalize_profile_name(os.getenv(PROFILE_ENV_KEY))
-
-
 def _load_raw_user_config():
     config_path = 'user_config.json'
     if os.path.exists(config_path):
@@ -380,19 +266,8 @@ def load_user_config():
     config = copy.deepcopy(DEFAULT_USER_CONFIG)
     user_config = RAW_USER_CONFIG
     if isinstance(user_config, dict) and user_config:
-        user_base_config = {k: v for k, v in user_config.items() if k != 'profiles'}
-        config = _deep_merge(config, user_base_config)
-        config = _apply_legacy_compat(config, user_base_config)
-
-        profile_overrides = user_config.get('profiles', {})
-        if isinstance(profile_overrides, dict):
-            active_profile_config = profile_overrides.get(ACTIVE_PROFILE)
-            if isinstance(active_profile_config, dict):
-                profile_override_without_tags = {
-                    k: v for k, v in active_profile_config.items() if k != 'tags'
-                }
-                config = _deep_merge(config, profile_override_without_tags)
-                config = _apply_legacy_compat(config, profile_override_without_tags)
+        config = _deep_merge(config, user_config)
+        config = _apply_legacy_compat(config, user_config)
     return config
 
 
@@ -422,25 +297,14 @@ class Config:
     frontend = USER_CONFIG['frontend']
     backend = USER_CONFIG['backend']
     scoring = USER_CONFIG['scoring']
-    delivery_profiles = USER_CONFIG['deliveryProfiles']
-    routing = USER_CONFIG['routing']
-
-    profile = ACTIVE_PROFILE
-
-    @classmethod
-    def get_delivery_profile(cls, profile_name: str | None = None):
-        normalized_profile = _normalize_profile_name(profile_name) if profile_name else None
-        selected_profile = normalized_profile or cls.routing.get('defaultProfile') or 'ai'
-        return cls.delivery_profiles.get(selected_profile, cls.delivery_profiles.get('ai', {}))
 
     @classmethod
     def get_default_introduce(cls):
-        return cls.get_delivery_profile().get('introduce', cls.introduce)
+        return cls.introduce
 
     @classmethod
     def get_client_config(cls):
         return {
-            'profile': cls.profile,
             'introduce': cls.get_default_introduce(),
             'character': cls.character,
             'tags': cls.tags,

@@ -199,84 +199,12 @@ def evaluateJobMatch(job: str):
     }
 
 
-def _calc_route_side_score(title: str, detail: str, route_config: dict) -> tuple[int, list[tuple[str, str, int]]]:
-    score = 0
-    hits: list[tuple[str, str, int]] = []
-    title_strong_matches = __find_matches(title, route_config.get('title_strong_keywords', {}))
-    title_medium_matches = __find_matches(title, route_config.get('title_medium_keywords', {}))
-    detail_matches = __find_matches(detail, route_config.get('detail_keywords', {}))
-
-    for keyword, keyword_score in title_strong_matches:
-        weighted_score = keyword_score * 3
-        score += weighted_score
-        hits.append(('title_strong', keyword, weighted_score))
-    for keyword, keyword_score in title_medium_matches:
-        weighted_score = keyword_score * 2
-        score += weighted_score
-        hits.append(('title_medium', keyword, weighted_score))
-    for keyword, keyword_score in detail_matches:
-        score += keyword_score
-        hits.append(('detail', keyword, keyword_score))
-
-    return score, hits
-
-
-def routeJobProfile(job: str):
-    title, detail = __extract_job_fields(job)
-    routing_config = Config.routing
-    default_profile = routing_config.get('defaultProfile', 'ai')
-    min_margin = routing_config.get('minMargin', 4)
-
-    ai_score, ai_hits = _calc_route_side_score(title, detail, routing_config.get('ai', {}))
-    ops_score, ops_hits = _calc_route_side_score(title, detail, routing_config.get('ops', {}))
-
-    if ai_score == 0 and ops_score == 0:
-        profile = default_profile
-        reason = 'fallback_default'
-    elif ai_score >= ops_score + min_margin:
-        profile = 'ai'
-        reason = 'ai_margin'
-    elif ops_score >= ai_score + min_margin:
-        profile = 'ops'
-        reason = 'ops_margin'
-    else:
-        ai_has_title_strong = any(match_type == 'title_strong' for match_type, _, _ in ai_hits)
-        ops_has_title_strong = any(match_type == 'title_strong' for match_type, _, _ in ops_hits)
-        if ops_has_title_strong and not ai_has_title_strong:
-            profile = 'ops'
-        elif ai_has_title_strong and not ops_has_title_strong:
-            profile = 'ai'
-        else:
-            profile = default_profile
-        reason = 'tie_break'
-
-    return {
-        'profile': profile,
-        'default_profile': default_profile,
-        'reason': reason,
-        'scores': {
-            'ai': ai_score,
-            'ops': ops_score,
-        },
-        'hits': {
-            'ai': ai_hits,
-            'ops': ops_hits,
-        },
-    }
-
-
-def evaluateJobDelivery(job: str):
+def evaluateSingleRouteDelivery(job: str):
     match_result = evaluateJobMatch(job)
-    route_result = routeJobProfile(job)
-    delivery_profile = Config.get_delivery_profile(route_result['profile'])
     return {
         **match_result,
-        'profile': route_result['profile'],
-        'route_reason': route_result['reason'],
-        'route_scores': route_result['scores'],
-        'route_hits': route_result['hits'],
-        'introduce': delivery_profile.get('introduce', Config.introduce),
-        'resumeIndex': delivery_profile.get('resumeIndex', Config.frontend.get('resumeIndex', 0)),
+        'introduce': Config.introduce,
+        'resumeIndex': Config.frontend.get('resumeIndex', 0),
     }
 
 
