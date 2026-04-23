@@ -16,13 +16,14 @@
         resumeIndex: 0, // 第几份简历，从 0 开始递增
         serverHost: 'http://127.0.0.1:8000', // 本地服务的主机地址
         thread: 50, // 分数阈值，低于这个就不发消息了
-        timestampTimeout: 3000, // 时间戳过期时间，单位毫秒，根据当前网络设定，建议不要太大。
+        timestampTimeout: 15000, // 时间戳过期时间，虚拟机/慢页面环境下需要放宽，避免 tab 身份误过期。
         onlyGreet: false, // 是否只打招呼，默认为false，即打招呼和代聊天
         manualFilterWaitMs: 10000, // 每轮搜索后留给用户手动筛选的时间
         roundRestartDelayMs: 2000, // 本轮结束后，启动下一轮前的缓冲时间
         maxEmptyRounds: 3, // 连续多少轮没有拿到新岗位后停止，避免空转
-        detailTimeout: 10000, // 获取职位详情超时时间
-        greetTimeout: 12000, // 打招呼页回执超时时间
+        detailTimeout: 20000, // 获取职位详情超时时间
+        greetTimeout: 20000, // 打招呼页回执超时时间
+        watchdogTimeout: 30000, // 单轮主循环卡住后自动自愈的超时时间
         preloadScrollPixels: 180, // 岗位预加载：每轮下滑像素
         preloadScrollWaitMs: 450, // 岗位预加载：每轮等待毫秒数
         preloadStableRoundsLimit: 24, // 岗位预加载：连续多少轮无增长后结束
@@ -835,6 +836,8 @@
             let pendingGreetTimer = null;
             let pendingGreetTitle = '';
             let pendingGreetDecision = null;
+            let loopWatchdogTimer = null;
+            let loopEpoch = 0;
 
             const clearPendingGreet = () => {
                 if (pendingGreetTimer) {
@@ -845,6 +848,25 @@
                 pendingGreetDecision = null;
             };
 
+            const clearLoopWatchdog = () => {
+                if (loopWatchdogTimer) {
+                    clearTimeout(loopWatchdogTimer);
+                    loopWatchdogTimer = null;
+                }
+            };
+
+            const armLoopWatchdog = (stage) => {
+                clearLoopWatchdog();
+                const currentEpoch = ++loopEpoch;
+                loopWatchdogTimer = setTimeout(() => {
+                    if (currentEpoch !== loopEpoch) return;
+                    logger.add(`主循环疑似卡住（${stage}，>${(OPTIONS.watchdogTimeout / 1000).toFixed(0)}s），自动重试当前轮`);
+                    clearPendingGreet();
+                    clearLoopWatchdog();
+                    loop();
+                }, OPTIONS.watchdogTimeout);
+            };
+
             const armPendingGreet = (title, decision = null) => {
                 clearPendingGreet();
                 pendingGreetTitle = title;
@@ -852,6 +874,7 @@
                 pendingGreetTimer = setTimeout(() => {
                     logger.add(`职位 [${pendingGreetTitle}] 打招呼超时，已跳过`);
                     clearPendingGreet();
+                    clearLoopWatchdog();
                     loop();
                 }, OPTIONS.greetTimeout);
             };
@@ -901,9 +924,9 @@
                     this.targets.detail,
                     this.bcTypes.GET_JOB_INFO,
                     OPTIONS.detailTimeout
-                ).catch(() => ({
+                ).catch((err) => ({
                     skip: true,
-                    skipReason: `获取职位详情超时（>${(OPTIONS.detailTimeout / 1000).toFixed(0)}s）`,
+                    skipReason: `获取职位详情超时或失败（>${(OPTIONS.detailTimeout / 1000).toFixed(0)}s）：${err?.message || err}`,
                 }));
                 return info;
             };
@@ -1010,6 +1033,7 @@
             // 循环
             const loop = async () => {
                 try {
+                    clearLoopWatchdog();
                     // 如果暂停，则跳过
                     if (this.pause) {
                         logger.add('暂停中...');
@@ -1020,7 +1044,9 @@
                     if (jobHrefs.length === 0) {
                         // 判断是否需要代聊天
                         if (OPTIONS.onlyGreet) {
+                            armLoopWatchdog('翻页获取岗位');
                             const hasNext = await nextPage();
+                            clearLoopWatchdog();
                             if (!hasNext) return handleRoundExhausted();
                             return loop();
                         }
@@ -1034,7 +1060,9 @@
                     // 获取详情
                     logger.add(`| 浏览: ${++count} | 剩余: ${jobHrefs.length} | 平均: ${(diff / count).toFixed(0)}s | 耗时: ${convertTime(diff)} |`);
                     logger.add(`正在获取职位详情`);
+                    armLoopWatchdog('获取职位详情');
                     const jobInfo = await getJobInfo(href);
+                    clearLoopWatchdog();
                     if (jobInfo.skip) {
                         logger.add(`职位跳过: ${jobInfo.skipReason}`);
                         await logAction({
@@ -1061,7 +1089,9 @@
                     }
                     // 否则发送消息计算匹配度
                     logger.add(`开始计算职位 [${jobInfo.title}] 的匹配度`);
+                    armLoopWatchdog('计算职位匹配度');
                     const decision = await api.getJobScore(jobInfo.title, jobInfo.salary, jobInfo.detail);
+                    clearLoopWatchdog();
                     logger.add(`匹配度: ${decision.score} | 路由: ${decision.profile} | 简历索引: ${decision.resumeIndex}`);
                     await logAction({
                         action: 'job_decision_consumed',
@@ -1110,6 +1140,7 @@
                                 reason: String(err),
                             });
                             clearPendingGreet();
+                            clearLoopWatchdog();
                             loop();
                         });
                     }
@@ -1128,6 +1159,7 @@
                         loop();
                     }
                 } catch (e) {
+                    clearLoopWatchdog();
                     console.log(e);
                     logger.add(`循环时出错: ${e}`);
                     loop();
@@ -1287,7 +1319,9 @@
             // 来自搜索页
             const fromSearchPage = () => {
                 // 把职位信息发送给搜索页
-                this.broadcast.send(this.targets.search, this.bcTypes.GET_JOB_INFO, jobInfo);
+                this.broadcast.send(this.targets.search, this.bcTypes.GET_JOB_INFO, jobInfo).finally(() => {
+                    window.close();
+                });
             };
 
             // 来自聊天页
@@ -1345,19 +1379,30 @@
             const sayHi = async () => {
                 startBroadcast(this.targets.chatGreet);
 
+                let stopped = false;
+                const stopAndClose = async () => {
+                    stopped = true;
+                    this.broadcast && this.broadcast.destroy();
+                    window.close();
+                };
+
                 // 心跳 
                 let count = 0;
                 const loop = () => {
+                    if (stopped) return;
                     this.broadcast.sendAndReceive(
                         this.targets.search,
                         this.bcTypes.HEART_BEAT,
                         { count: ++count }
                     ).then((res) => {
+                        if (stopped) return;
                         if (res.success) {
                             setTimeout(loop, 1000);
                         } else {
                             throw new Error('心跳失联');
                         }
+                    }).catch(() => {
+                        stopped = true;
                     });
                 };
                 loop();
@@ -1372,18 +1417,16 @@
                         profile: greetDecision.profile || 'ai',
                         resumeIndex: greetDecision.resumeIndex ?? OPTIONS.resumeIndex,
                     });
-                    this.broadcast.send(this.targets.search, this.bcTypes.SAY_HI, { success: true }).then(() => {
-                        this.broadcast.destroy();
-                    });
+                    await this.broadcast.send(this.targets.search, this.bcTypes.SAY_HI, { success: true });
+                    await stopAndClose();
                 } catch (e) {
                     await logAction({
                         action: 'greet_message_failed',
                         scene: 'chat_greet',
                         reason: String(e),
                     });
-                    this.broadcast.send(this.targets.search, this.bcTypes.SAY_HI, { success: false }).then(() => {
-                        this.broadcast.destroy();
-                    });
+                    await this.broadcast.send(this.targets.search, this.bcTypes.SAY_HI, { success: false }).catch(() => void 0);
+                    await stopAndClose();
                 }
             };
 
@@ -1555,18 +1598,26 @@
                     this.bcTypes.INTRODUCE,
                 )).introduce;
                 // 心跳
+                let heartbeatStopped = false;
                 let count = 0;
+                const stopHeartbeat = () => {
+                    heartbeatStopped = true;
+                };
                 const loop = async () => {
+                    if (heartbeatStopped) return;
                     await this.broadcast.sendAndReceive(
                         this.targets.search,
                         this.bcTypes.HEART_BEAT,
                         { count: ++count }
                     ).then((res) => {
+                        if (heartbeatStopped) return;
                         if (res.success) {
                             setTimeout(loop, 1000);
                         } else {
                             throw new Error('心跳失联');
                         }
+                    }).catch(() => {
+                        heartbeatStopped = true;
                     });
                 };
                 loop();
@@ -1738,7 +1789,9 @@
                             status('聊天程序运行出错');
                             await this.broadcast.send(this.targets.search, this.bcTypes.RUN, false);
                         }).finally(() => {
+                            stopHeartbeat();
                             this.broadcast.destroy();
+                            window.close();
                         });
                 }
             };
