@@ -32,6 +32,12 @@
 - `web_script.js` 去掉了 `profile / routeReason / routeScores` 等双路由语义
 - `user_config.example.json` 收回为公开版单简历模板
 - `readme.md` 重写为单简历主线说明
+- 后续又针对 AI 产品工程师方向继续收紧评分策略：
+  - 搜索关键词收敛到 AI 产品工程 / AI 应用 / Agent / 工作流相关岗位
+  - 标题词权重下降，不再过度依赖岗位名字字面命中
+  - 正文技术要求权重上升，更重视 Claude Code / Cursor / Codex / Agent / Workflow / Prompt / 需求到落地闭环
+  - 对传统算法训练岗、C/C++/Go、以及过重的 LangChain / LlamaIndex 套话做了更精细的压制或降权
+  - 对“产品助理 / 产品策划 / 实习生”这类泛产品岗位降低标题权重，避免和核心目标岗拉不开差距
 
 ### 为什么这样做
 
