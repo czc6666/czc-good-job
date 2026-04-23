@@ -941,7 +941,6 @@
                             this.bcTypes.SAY_HI,
                             {
                                 introduce: pendingGreetDecision?.introduce || this.introduce,
-                                profile: pendingGreetDecision?.profile || 'ai',
                                 resumeIndex: pendingGreetDecision?.resumeIndex ?? OPTIONS.resumeIndex,
                             },
                             data.requestId,
@@ -959,7 +958,6 @@
                             action: 'greet_sent',
                             scene: 'search',
                             title: finalTitle,
-                            profile: finalDecision?.profile || 'ai',
                             resumeIndex: finalDecision?.resumeIndex ?? OPTIONS.resumeIndex,
                         });
                     }
@@ -970,7 +968,6 @@
                             action: 'greet_failed',
                             scene: 'search',
                             title: finalTitle,
-                            profile: finalDecision?.profile || 'ai',
                             resumeIndex: finalDecision?.resumeIndex ?? OPTIONS.resumeIndex,
                         });
                     }
@@ -1062,27 +1059,23 @@
                     // 否则发送消息计算匹配度
                     logger.add(`开始计算职位 [${jobInfo.title}] 的匹配度`);
                     const decision = await api.getJobScore(jobInfo.title, jobInfo.salary, jobInfo.detail);
-                    logger.add(`匹配度: ${decision.score} | 路由: ${decision.profile} | 简历索引: ${decision.resumeIndex}`);
+                    logger.add(`匹配度: ${decision.score} | 简历索引: ${decision.resumeIndex}`);
                     await logAction({
                         action: 'job_decision_consumed',
                         scene: 'search',
                         title: jobInfo.title,
                         salary: jobInfo.salary,
                         score: decision.score,
-                        profile: decision.profile,
                         resumeIndex: decision.resumeIndex,
-                        routeReason: decision.routeReason,
-                        routeScores: decision.routeScores,
                     });
                     // 如果分数达到阈值，打个招呼
                     if (decision.score >= OPTIONS.thread) {
-                        logger.add(`正在给职位 [${jobInfo.title}] 发送打招呼消息（${decision.profile}）`);
+                        logger.add(`正在给职位 [${jobInfo.title}] 发送打招呼消息`);
                         await logAction({
                             action: 'greet_queued',
                             scene: 'search',
                             title: jobInfo.title,
                             salary: jobInfo.salary,
-                            profile: decision.profile,
                             resumeIndex: decision.resumeIndex,
                             score: decision.score,
                         });
@@ -1093,7 +1086,6 @@
                                 scene: 'search',
                                 title: jobInfo.title,
                                 chatUrl: jobInfo.chatUrl,
-                                profile: decision.profile,
                                 resumeIndex: decision.resumeIndex,
                             });
                             armPendingGreet(jobInfo.title, decision);
@@ -1103,7 +1095,6 @@
                                 action: 'greet_queue_failed',
                                 scene: 'search',
                                 title: jobInfo.title,
-                                profile: decision.profile,
                                 resumeIndex: decision.resumeIndex,
                                 addUrl: jobInfo.addUrl,
                                 chatUrl: jobInfo.chatUrl,
@@ -1122,7 +1113,6 @@
                             salary: jobInfo.salary,
                             score: decision.score,
                             threshold: OPTIONS.thread,
-                            profile: decision.profile,
                             resumeIndex: decision.resumeIndex,
                         });
                         loop();
@@ -1369,7 +1359,6 @@
                     await logAction({
                         action: 'greet_message_sent',
                         scene: 'chat_greet',
-                        profile: greetDecision.profile || 'ai',
                         resumeIndex: greetDecision.resumeIndex ?? OPTIONS.resumeIndex,
                     });
                     this.broadcast.send(this.targets.search, this.bcTypes.SAY_HI, { success: true }).then(() => {
@@ -1611,28 +1600,24 @@
                                 // 获取职位匹配度
                                 status(`开始计算职位 [${jobInfo.title}] 的匹配度`);
                                 const decision = await api.getJobScore(jobInfo.title, jobInfo.salary, jobInfo.detail);
-                                status(`匹配度: ${decision.score} | 路由: ${decision.profile} | 简历索引: ${decision.resumeIndex}`);
+                                status(`匹配度: ${decision.score} | 简历索引: ${decision.resumeIndex}`);
                                 await logAction({
                                     action: 'job_decision_consumed',
                                     scene: 'chat',
                                     title: jobInfo.title,
                                     salary: jobInfo.salary,
                                     score: decision.score,
-                                    profile: decision.profile,
                                     resumeIndex: decision.resumeIndex,
-                                    routeReason: decision.routeReason,
-                                    routeScores: decision.routeScores,
                                 });
                                 // 如果分数达到阈值并且未聊过天，打个招呼
                                 if (decision.score >= OPTIONS.thread && !chatInfo.msgs.length) {
-                                    status(`正在给职位 [${jobInfo.title}] 发送打招呼消息（${decision.profile}）`);
+                                    status(`正在给职位 [${jobInfo.title}] 发送打招呼消息`);
                                     try {
                                         await sendMsg(decision.introduce || defaultIntroduce);
                                         await logAction({
                                             action: 'chat_greet_sent',
                                             scene: 'chat',
                                             title: jobInfo.title,
-                                            profile: decision.profile,
                                             resumeIndex: decision.resumeIndex,
                                         });
                                         status(`打招呼成功`);
@@ -1641,7 +1626,6 @@
                                             action: 'chat_greet_failed',
                                             scene: 'chat',
                                             title: jobInfo.title,
-                                            profile: decision.profile,
                                             resumeIndex: decision.resumeIndex,
                                             reason: String(e),
                                         });
@@ -1657,7 +1641,6 @@
                                         title: jobInfo.title,
                                         score: decision.score,
                                         threshold: OPTIONS.thread,
-                                        profile: decision.profile,
                                         resumeIndex: decision.resumeIndex,
                                     });
                                     await sendMsg('不好意思，不太合适哈，祝早日找到合适的人选。')
@@ -1670,17 +1653,16 @@
                                 isChat = false;
                                 localStorage.setItem(this.targets.chat, new Date().getTime());
                                 chatInfo.jobEl.click();
-                                status(`正在获取职位详情（用于确定简历路由）`);
+                                status(`正在获取职位详情（用于确定简历）`);
                                 const jobInfo = await this.broadcast.receive(this.targets.detail, this.bcTypes.GET_JOB_INFO);
                                 const decision = await api.getJobScore(jobInfo.title, jobInfo.salary, jobInfo.detail);
-                                status(`检测到新消息，直接发送简历（${decision.profile} / 简历索引 ${decision.resumeIndex}）`);
+                                status(`检测到新消息，直接发送简历（简历索引 ${decision.resumeIndex}）`);
                                 const resumeResult = await sendResume(decision.resumeIndex);
                                 await logAction({
                                     action: 'resume_sent',
                                     scene: 'chat',
                                     title: jobInfo.title,
                                     salary: jobInfo.salary,
-                                    profile: decision.profile,
                                     requestedResumeIndex: decision.resumeIndex,
                                     selectedResumeIndex: resumeResult?.selectedResumeIndex ?? decision.resumeIndex,
                                     sendMode: resumeResult?.mode || 'unknown',
