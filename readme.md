@@ -42,6 +42,10 @@
 - 连续多轮没有新岗位时自动切换关键词继续挂机
 - 遇到超时、详情异常、打招呼异常时自动恢复
 
+## 演示视频
+
+- B 站演示视频：https://www.bilibili.com/video/BV1MyX6BFEp3
+
 ## 项目结构
 
 - `main.py`：FastAPI 后端入口
